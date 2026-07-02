@@ -1,0 +1,99 @@
+name: One-off YouTube Plus Gofile Build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/ytp-gofile-oneoff.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  GOFILE_CONTENT_ID: ZqZtV0
+  TWEAK_VERSION: "5.2.1"
+  DISPLAY_NAME: "YouTube"
+  BUNDLE_ID: "com.google.ios.youtube"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-tweaks:
+    uses: ./.github/workflows/_build_tweaks.yml
+    with:
+      enable_youpip: false
+      enable_ytuhd: false
+      enable_yq: false
+      enable_ryd: false
+      enable_ytabc: false
+      enable_demc: false
+      tweak_version: "5.2.1"
+
+  package:
+    name: Package IPA from Gofile
+    runs-on: macos-latest
+    needs: build-tweaks
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download built debs
+        uses: actions/download-artifact@v8
+        with:
+          name: built-debs
+          path: ${{ github.workspace }}
+
+      - name: Resolve and download IPA from Gofile
+        shell: bash
+        run: |
+          set -euo pipefail
+          token=$(curl -fsSL https://api.gofile.io/accounts | jq -r '.data.token')
+          if [[ -z "$token" || "$token" == "null" ]]; then
+            echo "::error::Could not get a Gofile guest token."
+            exit 1
+          fi
+
+          meta=$(curl -fsSL -H "Authorization: Bearer $token" "https://api.gofile.io/contents/${GOFILE_CONTENT_ID}?wt=4fd6sg89d7s6")
+          file_url=$(jq -r '[.. | objects | select(.type? == "file") | .link? // empty][0]' <<< "$meta")
+          file_name=$(jq -r '[.. | objects | select(.type? == "file") | .name? // empty][0]' <<< "$meta")
+
+          if [[ -z "$file_url" || "$file_url" == "null" ]]; then
+            echo "::error::Could not find a file download URL in the Gofile folder."
+            echo "$meta" | jq -c '.status, .data | keys?'
+            exit 1
+          fi
+
+          echo "Downloading ${file_name:-IPA} from Gofile..."
+          curl -fL --retry 3 --retry-delay 5 -H "Cookie: accountToken=$token" -o youtube.ipa "$file_url"
+
+          file_type=$(file --mime-type -b youtube.ipa)
+          if [[ "$file_type" != "application/x-ios-app" && "$file_type" != "application/zip" ]]; then
+            echo "::error::Validation failed: The downloaded file is not a valid IPA. Detected type: $file_type."
+            exit 1
+          fi
+
+      - name: Install cyan
+        run: pipx install --force https://github.com/asdfzxcvbn/pyzule-rw/archive/main.zip
+
+      - name: Inject tweaks into IPA
+        shell: bash
+        run: |
+          tweaks="ytplus.deb OpenYoutubeSafariExtension.appex"
+          for f in *.deb; do
+            [ -f "$f" ] && tweaks="$tweaks $f"
+          done
+          cyan -i youtube.ipa -o YouTubePlus_${TWEAK_VERSION}.ipa -uwef $tweaks -n "${DISPLAY_NAME}" -b "${BUNDLE_ID}"
+
+      - name: Upload to GitHub Releases
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ytp-gofile-${{ github.run_number }}
+          name: YouTubePlus v${{ env.TWEAK_VERSION }} Gofile (${{ github.run_number }})
+          files: YouTubePlus_${{ env.TWEAK_VERSION }}.ipa
+          draft: true
+
+      - name: Output Release URL
+        run: echo "::notice::Release available at: https://github.com/${{ github.repository }}/releases"
