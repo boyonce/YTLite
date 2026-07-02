@@ -15,6 +15,7 @@ env:
   TWEAK_VERSION: "5.2.1"
   DISPLAY_NAME: "YouTube"
   BUNDLE_ID: "com.google.ios.youtube"
+  RUN_NOTE: "trigger-2026-07-02"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
